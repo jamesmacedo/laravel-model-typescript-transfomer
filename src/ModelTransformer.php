@@ -4,9 +4,12 @@ namespace Nolanos\LaravelModelTypescriptTransformer;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Schema;
-use ReflectionClass;
 use Spatie\TypeScriptTransformer\Structures\TransformedType;
 use Spatie\TypeScriptTransformer\Transformers\Transformer;
+
+use ReflectionClass;
+use ReflectionMethod;
+use Illuminate\Database\Eloquent\Relations\Relation;
 
 class ModelTransformer implements Transformer
 {
@@ -17,6 +20,26 @@ class ModelTransformer implements Transformer
         }
         /** @var Model $modelInstance */
         $modelInstance = $class->newInstanceWithoutConstructor();
+
+        $relations = $this->defineRelations($modelInstance);
+
+        $typed_relations = [];
+
+        foreach ($relations as $relation) {
+            $typed_relations[] = $relation;
+        }
+
+        $types = array_merge($this->defineTypes($modelInstance, $class, $name), $typed_relations);
+
+        return TransformedType::create(
+            $class,
+            $name,
+            "{\n" . implode("\n", $types) . "\n}",
+        );
+    }
+
+    private function defineTypes($modelInstance, ReflectionClass $class, string $name): array
+    {
 
         $table = $modelInstance->getTable();
 
@@ -68,11 +91,31 @@ class ModelTransformer implements Transformer
             $typescriptProperties[] = "$append: $type";
         }
 
-        return TransformedType::create(
-            $class,
-            $name,
-            "{\n" . implode("\n", $typescriptProperties) . "\n}",
-        );
+        return $typescriptProperties;
+    }
+
+    private function defineRelations($model): array
+    {
+
+        $reflection = new ReflectionClass($model);
+        $methods = $reflection->getMethods(ReflectionMethod::IS_PUBLIC);
+        $ownMethods = array_filter($methods, fn($method) => $method->class === get_class($model));
+        $relations = [];
+
+        foreach ($ownMethods as $method) {
+            // Do a quick check if the methods requests a param, if so, skip
+            if(!empty($method->getParameters())) continue; 
+
+            $relationship = $model->{$method->name}();
+
+            if($relationship instanceof Relation) {
+                $relatedName = class_basename($relationship->getRelated());
+                $type = strpos(strtolower(class_basename($relationship)), 'many') ? $relatedName."[]" : "$relatedName";
+                $relations[] = "$method->name: $type";
+            }
+        }
+
+        return $relations;
     }
 
     private function mapTypeNameToJsonType(string $columnType): string
